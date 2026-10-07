@@ -238,3 +238,66 @@ func TestEditorErrorKeepsText(t *testing.T) {
 		t.Error("temp file left after a clean save")
 	}
 }
+
+func TestCalendarArrowsScrollBothWaysAndBacklogKey(t *testing.T) {
+	s, _ := seed(t)
+	today := store.Today()
+	m := newModel(s)
+	m = press(t, m, "g", "h")
+	if m.col != 1 || m.start != store.AddDays(today, -1) {
+		t.Fatalf("left at the first day: col %d start %s, want col 1 start %s", m.col, m.start, store.AddDays(today, -1))
+	}
+	m = press(t, m, "b")
+	if m.col != 0 {
+		t.Fatalf("b: col %d", m.col)
+	}
+	if m = press(t, m, "h"); m.col != 0 {
+		t.Fatalf("left in backlog moved to col %d", m.col)
+	}
+	if m = press(t, m, "l"); m.col != 1 {
+		t.Fatalf("right from backlog: col %d", m.col)
+	}
+}
+
+// An empty day under the cursor must still show where the cursor is.
+func TestEmptySelectedDayIsMarked(t *testing.T) {
+	s := &store.Store{Dir: t.TempDir()}
+	m := newModel(s)
+	m.w, m.h = 130, 20
+	m = press(t, m, "g", "l", "l")
+	out := m.View().Content
+	if !strings.Contains(out, sSelText.Width(m.colWidth()-2).Render("·")) {
+		t.Fatal("selected empty day has no highlighted marker")
+	}
+	if !strings.Contains(out, sToday.Underline(true).Render(store.Label(store.AddDays(store.Today(), 2)))) {
+		t.Fatal("selected day header is not underlined")
+	}
+}
+
+// The 2s reload used to pull the cursor off an empty day back onto the last
+// task it had been on.
+func TestReloadKeepsCursorOnEmptyDay(t *testing.T) {
+	s, _ := seed(t)
+	m := newModel(s)
+	m.w, m.h = 130, 20
+	m = press(t, m, "g")
+	for i := 0; i < m.dayCount() && func() bool { _, ok := m.current(); return ok }(); i++ {
+		m = press(t, m, "l")
+	}
+	if _, ok := m.current(); ok {
+		t.Skip("no empty day in view")
+	}
+	col, start := m.col, m.start
+	next, _ := m.Update(tickMsg{})
+	m = next.(model)
+	if m.col != col || m.start != start {
+		t.Fatalf("reload moved the cursor from col %d to %d", col, m.col)
+	}
+}
+
+func TestDescPreviewSkipsPlanLine(t *testing.T) {
+	got := descLines("Plan: /Users/x/dev/app/docs/plans/2026-10-07-checkout.md\n\nShip the checkout flow", 40)
+	if len(got) != 1 || got[0] != "Ship the checkout flow" {
+		t.Fatalf("got %q", got)
+	}
+}

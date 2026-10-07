@@ -24,19 +24,32 @@ const usage = `tk - terminal task planner
   tk add <title> -p <project> [--plan <day>] [--deadline <day>] [--desc <text>|--desc -]
   tk plan <id> <day|none>
   tk deadline <id> <day|none>
-  tk done <id>               mark done today
+  tk done <id> [--on <day>]  mark done today, or on that day
   tk undo <id>               mark not done
   tk edit <id> [--title t] [-p project] [--desc <text>|--desc -]
   tk rm <id>
   tk projects [--json]
 
 --desc - reads the description from stdin. Data lives in $TK_DIR or ~/tasks.
+
+Posts: "tk post <command>" runs any command above on the post calendar in
+$TK_SOCIAL_DIR or ~/social; "tk post" alone opens it. Planned = the day it goes
+out, done = published that day. Posts also take:
+  --platform linkedin|instagram|facebook|tiktok   (add, edit)
+  --status draft|approved                         (add, edit)
+  --url <link>                                    (edit, done)
 `
+
+var platforms = map[string]bool{"linkedin": true, "instagram": true, "facebook": true, "tiktok": true}
+var statuses = map[string]bool{"draft": true, "approved": true}
 
 type out struct {
 	ID          string `json:"id"`
 	Title       string `json:"title"`
 	Project     string `json:"project"`
+	Platform    string `json:"platform,omitempty"`
+	Status      string `json:"status,omitempty"`
+	URL         string `json:"url,omitempty"`
 	Repo        string `json:"repo,omitempty"`
 	Planned     string `json:"planned,omitempty"`
 	Deadline    string `json:"deadline,omitempty"`
@@ -47,7 +60,14 @@ type out struct {
 }
 
 func Run(args []string, stdin io.Reader, stdout io.Writer) error {
-	s, err := store.Open()
+	open := store.Open
+	if args[0] == "post" {
+		open, args = store.OpenSocial, args[1:]
+		if len(args) == 0 {
+			return errors.New("usage: tk post <command>; tk post alone opens the app")
+		}
+	}
+	s, err := open()
 	if err != nil {
 		return err
 	}
@@ -142,7 +162,7 @@ func Run(args []string, stdin io.Reader, stdout io.Writer) error {
 			fmt.Fprintf(stdout, "  (%s)", o.Repo)
 		}
 		fmt.Fprintln(stdout)
-		for _, kv := range [][2]string{{"planned", o.Planned}, {"carried from", o.CarriedFrom}, {"deadline", o.Deadline}, {"done", o.DoneAt}} {
+		for _, kv := range [][2]string{{"platform", o.Platform}, {"status", o.Status}, {"url", o.URL}, {"planned", o.Planned}, {"carried from", o.CarriedFrom}, {"deadline", o.Deadline}, {"done", o.DoneAt}} {
 			if kv[1] != "" {
 				fmt.Fprintf(stdout, "%s: %s\n", kv[0], kv[1])
 			}
@@ -194,9 +214,19 @@ func Run(args []string, stdin io.Reader, stdout io.Writer) error {
 		if len(pos) != 1 {
 			return errors.New("give exactly one task id")
 		}
+		// --on records a past publication or finish; the default is today.
+		on := today
+		if v, ok := flags["on"]; ok {
+			if on, err = store.ParseDay(v, today); err != nil || on == "" {
+				return fmt.Errorf("bad day %q", v)
+			}
+		}
 		t, err := s.Update(pos[0], func(t *store.Task) error {
 			if cmd == "done" {
-				t.DoneAt = today
+				t.DoneAt = on
+				if v := flags["url"]; v != "" {
+					t.URL = v
+				}
 			} else {
 				t.DoneAt = ""
 			}
@@ -232,6 +262,15 @@ func Run(args []string, stdin io.Reader, stdout io.Writer) error {
 			}
 			if _, ok := flags["desc"]; ok {
 				t.Body = edits.Body
+			}
+			if _, ok := flags["platform"]; ok {
+				t.Platform = edits.Platform
+			}
+			if _, ok := flags["status"]; ok {
+				t.Status = edits.Status
+			}
+			if _, ok := flags["url"]; ok {
+				t.URL = edits.URL
 			}
 			return nil
 		})
@@ -270,7 +309,7 @@ func Run(args []string, stdin io.Reader, stdout io.Writer) error {
 // title, so `tk add fix -v flag` keeps "-v".
 func parse(args []string) ([]string, map[string]string, error) {
 	bools := map[string]bool{"json": true, "done": true, "all": true}
-	valued := map[string]bool{"p": true, "plan": true, "deadline": true, "desc": true, "title": true}
+	valued := map[string]bool{"p": true, "plan": true, "deadline": true, "desc": true, "title": true, "platform": true, "status": true, "url": true, "on": true}
 	var pos []string
 	flags := map[string]string{}
 	for i := 0; i < len(args); i++ {
@@ -320,6 +359,21 @@ func applyEdits(t *store.Task, flags map[string]string, stdin io.Reader, today s
 		}
 		t.Deadline = d
 	}
+	if v, ok := flags["platform"]; ok {
+		if v = strings.ToLower(v); v != "" && !platforms[v] {
+			return fmt.Errorf("platform %q: use linkedin, instagram, facebook or tiktok", v)
+		}
+		t.Platform = v
+	}
+	if v, ok := flags["status"]; ok {
+		if v = strings.ToLower(v); v != "" && !statuses[v] {
+			return fmt.Errorf("status %q: use draft or approved; published is tk post done", v)
+		}
+		t.Status = v
+	}
+	if v, ok := flags["url"]; ok {
+		t.URL = strings.TrimSpace(v)
+	}
 	if v, ok := flags["desc"]; ok {
 		if v == "-" {
 			b, err := io.ReadAll(stdin)
@@ -346,6 +400,7 @@ func one(s *store.Store, pos []string) (store.Task, error) {
 func view(s *store.Store, t store.Task, p store.Placement, withBody bool) out {
 	o := out{
 		ID: t.ID, Title: t.Title, Project: t.Project, Repo: s.RepoPath(t.Project),
+		Platform: t.Platform, Status: t.Status, URL: t.URL,
 		Planned: t.Planned, Deadline: t.Deadline, DoneAt: t.DoneAt,
 		CarriedFrom: p.CarriedFrom, File: t.Path,
 	}
@@ -377,7 +432,14 @@ func printList(w io.Writer, list []out, today string) {
 		if o.DoneAt != "" {
 			tags = append(tags, "done "+store.Label(o.DoneAt))
 		}
-		line := fmt.Sprintf("  %s %-7s %-16s %s", box, o.ID, o.Project, o.Title)
+		project := o.Project
+		if o.Platform != "" {
+			project += "/" + o.Platform
+		}
+		if o.Status != "" && o.DoneAt == "" {
+			tags = append(tags, o.Status)
+		}
+		line := fmt.Sprintf("  %s %-7s %-16s %s", box, o.ID, project, o.Title)
 		if len(tags) > 0 {
 			line += "  (" + strings.Join(tags, ", ") + ")"
 		}

@@ -50,7 +50,8 @@ Where a task shows up:
 | `e` | edit the description in `$VISUAL`, `$EDITOR` or nvim |
 | enter | read the rendered description |
 | `r` / `m` / `X` | rename / move to project / delete |
-| `,` `.` / `g` | scroll days / back to today |
+| arrows / `h` `j` `k` `l` | move; left of the first day and right of the last scroll a day |
+| `,` `.` / `g` / `b` | scroll a week / back to today / backlog |
 | `1` `2` tab | calendar / board |
 | `?` / `q` | all keys / quit |
 
@@ -66,7 +67,7 @@ tk show <id> [--json]
 tk add <title> -p <project> [--plan <day>] [--deadline <day>] [--desc <text> | --desc -]
 tk plan <id> <day|none>
 tk deadline <id> <day|none>
-tk done <id>
+tk done <id> [--on <day>]
 tk undo <id>
 tk edit <id> [--title t] [-p project] [--desc <text> | --desc -]
 tk rm <id>
@@ -74,6 +75,18 @@ tk projects [--json]
 ```
 
 `--desc -` reads the description from stdin. JSON output includes each task's repo path and file, which is what an agent needs to start work.
+
+## Posts
+
+`tk post` opens the same app on a social post calendar in `$TK_SOCIAL_DIR` (default `~/social`), and `tk post <command>` runs any command above there. A post is a task with a platform: planned is the day it goes out, done is the day it was published.
+
+```
+tk post add "Replika case study" -p codapi --platform linkedin --status approved --plan fri --desc -
+tk post done <id> --url https://www.linkedin.com/posts/... [--on <day>]
+tk post list -p codapi --all
+```
+
+Platforms: linkedin, instagram, facebook, tiktok. Status: draft or approved; published is `done_at`. The post text comes first in the body; notes go under a `##` heading after it. Images sit beside the posts in `~/social/<project>/media/<id>/` and `brand/`, which tk does not read.
 
 ## Data
 

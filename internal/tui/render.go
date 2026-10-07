@@ -42,7 +42,7 @@ func (m model) View() tea.View {
 	v.AltScreen = true
 	v.BackgroundColor = cBg
 	v.ForegroundColor = cFg
-	v.WindowTitle = "tk"
+	v.WindowTitle = m.title
 	return v
 }
 
@@ -53,7 +53,7 @@ func (m model) headerBar() string {
 		}
 		return sTab.Render(n + " " + label)
 	}
-	left := sLogo.Render("tk") + " " + tab("1", "calendar", m.view == viewCal) + tab("2", "board", m.view == viewBoard)
+	left := sLogo.Render(m.title) + " " + tab("1", "calendar", m.view == viewCal) + tab("2", "board", m.view == viewBoard)
 	right := sDim.Render(store.LongLabel(m.today)) + " "
 	gap := m.w - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
@@ -86,7 +86,7 @@ func (m model) hintLine() string {
 	case m.mode == modeDetail:
 		h = "e edit  x done  p plan  u deadline  r rename  m project  ↑↓ scroll  esc back"
 	case m.view == viewCal:
-		h = "a add  x done  p plan  [ ] move day  u deadline  e edit  ⏎ open  , . scroll  g today  2 board  ? keys  q quit"
+		h = "a add  x done  p plan  [ ] move day  u deadline  e edit  ⏎ open  , . week  g today  b backlog  2 board  ? keys  q quit"
 	default:
 		h = "a add  x done  p plan  d show done  e edit  ⏎ open  h/l projects/tasks  1 calendar  ? keys  q quit"
 	}
@@ -108,10 +108,11 @@ func (m model) helpView() string {
 		{"q", "quit"},
 		{"", ""},
 		{"", "calendar"},
-		{"h j k l / arrows", "move"},
+		{"h j k l / arrows", "move; left of the first day goes back in time"},
 		{"[ ]", "move task a day back / forward (left of today = backlog)"},
 		{", .", "scroll days"},
 		{"g", "back to today"},
+		{"b", "backlog"},
 		{"", ""},
 		{"", "board"},
 		{"h / l", "projects / tasks"},
@@ -147,7 +148,19 @@ func (m model) renderColumn(c column, ci, cw, bh int) string {
 	inner := cw - 2
 	var head string
 	n := len(c.todo)
+	// The cursor's column header is underlined in green, so moving onto an
+	// empty day is visible.
+	if ci == m.col && m.view == viewCal {
+		label := "BACKLOG"
+		if c.day == m.today {
+			label = "TODAY " + store.Label(c.day)
+		} else if c.day != "" {
+			label = store.Label(c.day)
+		}
+		head = sToday.Underline(true).Render(label) + sDim.Render(fmt.Sprintf(" %d", n))
+	}
 	switch {
+	case head != "":
 	case c.day == "":
 		head = sHead.Render(fmt.Sprintf("BACKLOG %d", n))
 	case c.day == m.today:
@@ -174,7 +187,9 @@ func (m model) renderColumn(c column, ci, cw, bh int) string {
 			selEnd = len(body)
 		}
 	}
-	if len(body) == 0 && c.day != "" && c.day >= m.today {
+	if len(body) == 0 && ci == m.col && m.view == viewCal {
+		body = append(body, sSelText.Width(inner).Render("·"))
+	} else if len(body) == 0 && c.day != "" && c.day >= m.today {
 		body = append(body, sFaint.Render("·"))
 	}
 
@@ -195,10 +210,30 @@ func (m model) renderColumn(c column, ci, cw, bh int) string {
 	return lipgloss.NewStyle().Width(cw).PaddingRight(2).Render(strings.Join(lines, "\n"))
 }
 
+// doneBar marks every line of a finished task or published post with a thin
+// green edge, so a done card reads as one block at a glance.
+func doneBar(lines []string) []string {
+	for i, l := range lines {
+		lines[i] = sGreen.Render("▎") + l
+	}
+	return lines
+}
+
 func (m model) calItem(it item, w int, selected bool) []string {
+	if it.t.Done() {
+		return doneBar(m.calCard(it, w-1, selected))
+	}
+	return m.calCard(it, w, selected)
+}
+
+func (m model) calCard(it item, w int, selected bool) []string {
 	t := it.t
 	var flags []string
 	var plainFlags []string
+	if t.Platform != "" {
+		flags = append(flags, badge(t.Platform))
+		plainFlags = append(plainFlags, " "+t.Platform+" ")
+	}
 	if it.p.CarriedFrom != "" {
 		flags = append(flags, sRed.Render("from "+store.Label(it.p.CarriedFrom)))
 		plainFlags = append(plainFlags, "from "+store.Label(it.p.CarriedFrom))
@@ -230,25 +265,109 @@ func (m model) calItem(it item, w int, selected bool) []string {
 		}
 	}
 
+	desc := descLines(t.Body, w-2)
+
 	if selected {
+		var out []string
 		if below {
-			out := []string{sSelText.Width(w).Render(ansi.Truncate(t.Project, w, "…"))}
+			out = append(out, sSelText.Width(w).Render(ansi.Truncate(t.Project, w, "…")))
 			for _, l := range plainBelow {
 				out = append(out, sSelText.Width(w).Render(l))
 			}
-			return append(out, sSelText.Width(w).Render(title))
+		} else {
+			out = append(out, selSpread(t.Project, flags, plainFlags, w))
 		}
-		return []string{sSelText.Width(w).Render(spread(t.Project, plain, w)), sSelText.Width(w).Render(title)}
+		out = append(out, sSelText.Width(w).Render(title))
+		for _, d := range desc {
+			out = append(out, sSelDesc.Width(w).Render("  "+d))
+		}
+		return out
 	}
 	l2 := sBase.Render(title)
 	if t.Done() {
 		l2 = sGreen.Render("✓ ") + sDim.Render(ansi.Truncate(t.Title, w-2, "…"))
 	}
+	var out []string
 	if below {
-		out := append([]string{sDim.Render(ansi.Truncate(t.Project, w, "…"))}, styledBelow...)
-		return append(out, l2)
+		out = append([]string{sDim.Render(ansi.Truncate(t.Project, w, "…"))}, styledBelow...)
+	} else {
+		out = []string{spreadStyled(sDim.Render(t.Project), styled, w)}
 	}
-	return []string{spreadStyled(sDim.Render(t.Project), styled, w), l2}
+	out = append(out, l2)
+	for _, d := range desc {
+		out = append(out, sDesc.Render("  "+d))
+	}
+	return out
+}
+
+// selSpread draws a selected card's first line: project left, labels right,
+// selection background across the gaps, platform badge kept in its colour.
+func selSpread(project string, flags, plainFlags []string, w int) string {
+	right := ""
+	rw := 0
+	for i, f := range flags {
+		if i > 0 {
+			right += sSel.Render(" · ")
+			rw += 3
+		}
+		if strings.HasPrefix(plainFlags[i], " ") { // the badge
+			right += f
+		} else {
+			right += sSelText.Render(plainFlags[i])
+		}
+		rw += lipgloss.Width(plainFlags[i])
+	}
+	left := ansi.Truncate(project, max(1, w-rw-1), "…")
+	gap := max(1, w-lipgloss.Width(left)-rw)
+	return sSelText.Render(left) + sSel.Render(strings.Repeat(" ", gap)) + right
+}
+
+func badge(platform string) string {
+	st, ok := platformStyle[platform]
+	if !ok {
+		return sDim.Render(platform)
+	}
+	return st.Render(" " + platform + " ")
+}
+
+// descLines is the start of a description as up to two wrapped lines, the
+// second cut with "…" when there is more. Markdown marks are dropped; a post's
+// notes after its first "##" heading are left out when text comes before it.
+func descLines(body string, w int) []string {
+	if w < 4 {
+		return nil
+	}
+	if i := strings.Index(body, "\n## "); i > 0 && strings.TrimSpace(body[:i]) != "" {
+		body = body[:i]
+	}
+	var words []string
+	fence := false
+	for _, l := range strings.Split(body, "\n") {
+		l = strings.TrimSpace(l)
+		if strings.HasPrefix(l, "```") {
+			fence = !fence
+			continue
+		}
+		if fence || l == "" {
+			continue
+		}
+		// A linked plan's path leads the description (tk skill); the preview
+		// shows the goal under it instead.
+		if len(words) == 0 && strings.HasPrefix(l, "Plan:") {
+			continue
+		}
+		l = strings.TrimLeft(l, "#>-*+ ")
+		l = strings.NewReplacer("**", "", "__", "", "`", "").Replace(l)
+		words = append(words, strings.Fields(l)...)
+	}
+	if len(words) == 0 {
+		return nil
+	}
+	lines := strings.Split(ansi.Wrap(strings.Join(words, " "), w, ""), "\n")
+	if len(lines) <= 2 {
+		return lines
+	}
+	return []string{lines[0], ansi.Truncate(lines[1]+" "+lines[2], w, "…")}
 }
 
 // ---- board
@@ -302,7 +421,7 @@ func (m model) boardView() string {
 		if sel {
 			selStart = len(body)
 		}
-		body = append(body, m.boardRow(it, lw-1, name == "", sel))
+		body = append(body, m.boardRow(it, lw-1, name == "", sel)...)
 		if sel {
 			selEnd = len(body)
 		}
@@ -339,7 +458,14 @@ func (m model) boardView() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, sideBox, " ", list)
 }
 
-func (m model) boardRow(it item, w int, showProject bool, selected bool) string {
+func (m model) boardRow(it item, w int, showProject bool, selected bool) []string {
+	if it.t.Done() {
+		return doneBar(m.boardLine(it, w-1, showProject, selected))
+	}
+	return m.boardLine(it, w, showProject, selected)
+}
+
+func (m model) boardLine(it item, w int, showProject bool, selected bool) []string {
 	t := it.t
 	mark := "  "
 	if t.Done() {
@@ -349,16 +475,24 @@ func (m model) boardRow(it item, w int, showProject bool, selected bool) string 
 	if showProject {
 		right = append(right, fmt.Sprintf("%-14s", ansi.Truncate(t.Project, 14, "…")))
 	}
+	platformCol := ""
+	if t.Platform != "" {
+		platformCol = fmt.Sprintf("%-11s", " "+t.Platform+" ")
+		right = append(right, platformCol)
+	}
 	when := ""
 	switch {
 	case t.Done():
 		when = "done " + store.Label(t.DoneAt)
+		if t.Platform != "" {
+			when = "published " + store.Label(t.DoneAt)
+		}
 	case it.p.CarriedFrom != "":
 		when = "from " + store.Label(it.p.CarriedFrom)
 	case t.Planned != "":
 		when = "⏵ " + store.Label(t.Planned)
 	}
-	right = append(right, fmt.Sprintf("%-12s", when))
+	right = append(right, fmt.Sprintf("%-16s", when))
 	dl := ""
 	if t.Deadline != "" && !t.Done() {
 		dl = "due " + shortDate(t.Deadline)
@@ -367,9 +501,26 @@ func (m model) boardRow(it item, w int, showProject bool, selected bool) string 
 	r := strings.Join(right, " ")
 	tw := max(8, w-lipgloss.Width(r)-1)
 	left := fmt.Sprintf("%-*s", tw, ansi.Truncate(mark+t.Title, tw, "…"))
+	var desc []string
+	for _, d := range descLines(t.Body, tw-4) {
+		desc = append(desc, "    "+d)
+	}
 
 	if selected {
-		return sSelText.Width(w).Render(left + " " + r)
+		line := sSelText.Width(w).Render(left + " " + r)
+		if platformCol != "" {
+			// Same columns, badge kept in its colour on the selection background.
+			i := strings.Index(r, platformCol)
+			line = sSelText.Render(left+" "+r[:i]) + badge(t.Platform) +
+				sSel.Render(strings.Repeat(" ", len(platformCol)-len(t.Platform)-2)) +
+				sSelText.Render(r[i+len(platformCol):])
+			line += sSel.Render(strings.Repeat(" ", max(0, w-lipgloss.Width(line))))
+		}
+		out := []string{line}
+		for _, d := range desc {
+			out = append(out, sSelDesc.Width(w).Render(d))
+		}
+		return out
 	}
 	ls := sBase.Render(left)
 	if t.Done() {
@@ -383,8 +534,15 @@ func (m model) boardRow(it item, w int, showProject bool, selected bool) string 
 	if showProject {
 		rs = append(rs, sDim.Render(right[0]))
 	}
+	if t.Platform != "" {
+		rs = append(rs, badge(t.Platform)+strings.Repeat(" ", len(platformCol)-len(t.Platform)-2))
+	}
 	rs = append(rs, whenStyle.Render(right[len(right)-2]), deadlineStyle(store.Deadline(t, m.today)).Render(right[len(right)-1]))
-	return ls + " " + strings.Join(rs, " ")
+	out := []string{ls + " " + strings.Join(rs, " ")}
+	for _, d := range desc {
+		out = append(out, sDesc.Render(d))
+	}
+	return out
 }
 
 // ---- detail
@@ -409,6 +567,8 @@ func (m *model) openDetail(id string) {
 	}
 	meta("project", t.Project, sGreen)
 	meta("repo", m.s.RepoPath(t.Project), sBase)
+	meta("platform", t.Platform, sBase)
+	meta("status", t.Status, sBase)
 	p := store.Place(t, m.today)
 	if t.Planned != "" {
 		meta("planned", store.LongLabel(t.Planned), sBase)
@@ -422,6 +582,7 @@ func (m *model) openDetail(id string) {
 	if t.Done() {
 		meta("done", store.LongLabel(t.DoneAt), sGreen)
 	}
+	meta("url", t.URL, sBase)
 	meta("id", t.ID, sDim)
 	b.WriteString("  " + sFaint.Render(strings.Repeat("─", w-2)) + "\n")
 

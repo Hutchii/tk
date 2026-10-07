@@ -17,13 +17,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Task is a task, or a post when it lives in the social dir (tk post).
+// Platform, Status and URL are for posts only; empty on tasks, so task files
+// never show them.
 type Task struct {
 	ID       string `yaml:"id"`
 	Title    string `yaml:"title"`
 	Project  string `yaml:"project"`
+	Platform string `yaml:"platform,omitempty"`
+	Status   string `yaml:"status,omitempty"`
 	Deadline string `yaml:"deadline,omitempty"`
 	Planned  string `yaml:"planned,omitempty"`
 	DoneAt   string `yaml:"done_at,omitempty"`
+	URL      string `yaml:"url,omitempty"`
 	Created  string `yaml:"created"`
 
 	// Extra keeps frontmatter keys tk doesn't know, so a hand-added field
@@ -41,14 +47,20 @@ type Store struct {
 }
 
 // Open uses TK_DIR, falling back to ~/tasks.
-func Open() (*Store, error) {
-	dir := os.Getenv("TK_DIR")
+func Open() (*Store, error) { return openDir("TK_DIR", "tasks") }
+
+// OpenSocial is the post calendar: TK_SOCIAL_DIR, falling back to ~/social.
+// Posts are tasks with a platform, so the same files, lock and day rules apply.
+func OpenSocial() (*Store, error) { return openDir("TK_SOCIAL_DIR", "social") }
+
+func openDir(env, name string) (*Store, error) {
+	dir := os.Getenv(env)
 	if dir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return nil, err
 		}
-		dir = filepath.Join(home, "tasks")
+		dir = filepath.Join(home, name)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -304,8 +316,11 @@ func readTask(path string) (Task, error) {
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
 
+// Polish titles are common (posts); without this "książki" becomes "ksi-ki".
+var polish = strings.NewReplacer("ą", "a", "ć", "c", "ę", "e", "ł", "l", "ń", "n", "ó", "o", "ś", "s", "ź", "z", "ż", "z")
+
 func slug(s string) string {
-	s = strings.Trim(nonSlug.ReplaceAllString(strings.ToLower(s), "-"), "-")
+	s = strings.Trim(nonSlug.ReplaceAllString(polish.Replace(strings.ToLower(s)), "-"), "-")
 	if len(s) > 40 {
 		s = strings.TrimRight(s[:40], "-")
 	}

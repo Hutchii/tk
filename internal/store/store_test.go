@@ -219,3 +219,26 @@ func TestBadIDsRejected(t *testing.T) {
 		t.Fatal("a bad id deleted the task")
 	}
 }
+
+// Post fields are omitempty: saving a task written before they existed must
+// not change its file.
+func TestTaskFileUnchangedByPostFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "acme", "abc-fix-login.md")
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	orig := "---\nid: abc\ntitle: Fix login\nproject: acme\ndeadline: \"2026-10-10\"\nplanned: \"2026-10-07\"\ncreated: \"2026-10-06\"\n---\nBody\n"
+	os.WriteFile(path, []byte(orig), 0o644)
+	s := &Store{Dir: dir}
+	if _, err := s.Update("abc", func(*Task) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != orig {
+		t.Fatalf("file changed:\n%s", got)
+	}
+}
+
+func TestSlugTransliteratesPolish(t *testing.T) {
+	if got := slug("Replika, jak czytelnik szuka książki"); got != "replika-jak-czytelnik-szuka-ksiazki" {
+		t.Fatalf("got %q", got)
+	}
+}

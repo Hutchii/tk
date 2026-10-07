@@ -48,6 +48,7 @@ func (c column) items() []item { return append(append([]item{}, c.todo...), c.do
 
 type model struct {
 	s      *store.Store
+	title  string // "tk" or "tk posts": both screens look alike otherwise
 	tasks  []store.Task
 	today  string
 	w, h   int
@@ -80,19 +81,21 @@ type editorDoneMsg struct {
 	err            error
 }
 
-func Run() error {
-	s, err := store.Open()
+func Run(open func() (*store.Store, error), title string) error {
+	s, err := open()
 	if err != nil {
 		return err
 	}
-	_, err = tea.NewProgram(newModel(s)).Run()
+	m := newModel(s)
+	m.title = title
+	_, err = tea.NewProgram(m).Run()
 	return err
 }
 
 func newModel(s *store.Store) model {
 	in := textinput.New()
 	in.Prompt = ""
-	m := model{s: s, input: in, w: 100, h: 30, vp: viewport.New()}
+	m := model{s: s, title: "tk", input: in, w: 100, h: 30, vp: viewport.New()}
 	m.reload()
 	m.start = m.today
 	m.col = 1
@@ -274,6 +277,9 @@ func (m *model) clamp() {
 
 func (m *model) syncSel() {
 	m.clamp()
+	// On an empty spot nothing is selected; keeping the old id made the 2s
+	// reload jump the cursor back to that task.
+	m.selID = ""
 	if t, ok := m.current(); ok {
 		m.selID = t.ID
 	}
@@ -424,8 +430,12 @@ func (m model) updateNormal(key string) (tea.Model, tea.Cmd) {
 	if m.view == viewCal {
 		switch key {
 		case "h", "left":
-			if m.col > 0 {
+			// Past the first day the week slides back, like right does at the
+			// last day. The backlog is "b", so left never lands there by accident.
+			if m.col > 1 {
 				m.col--
+			} else if m.col == 1 {
+				m.start = store.AddDays(m.start, -1)
 			}
 		case "l", "right":
 			if m.col < m.dayCount() {
@@ -443,6 +453,8 @@ func (m model) updateNormal(key string) (tea.Model, tea.Cmd) {
 			m.start = store.AddDays(m.start, m.dayCount())
 		case "g":
 			m.start, m.col = m.today, 1
+		case "b":
+			m.col = 0
 		case "[", "]":
 			m.moveDay(key == "]")
 			return m, nil
